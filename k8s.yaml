@@ -1,0 +1,289 @@
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: retell-caller-config
+  namespace: default
+data:
+  # DB_HOST: "postgres-service.default.svc.cluster.local"
+  # DB_PORT: "5432"
+  # DB_NAME: "ardent_survey"
+  # DB_TABLE_NAME: "survey_responses"
+  SCAN_INTERVAL_MS: "10000"
+  CLEANUP_INTERVAL_MS: "300000"
+  PORT: "3000"
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  RETELL_FROM_NUMBER: "+17787691188"
+  RETELL_AGENT_ID: "agent_826371748c85ca36277cae28c2"
+  DAEMONSET_NAME: "retell-caller"
+
+---
+# Secret for Retell API key
+apiVersion: v1
+kind: Secret
+metadata:
+  name: retell-caller-api-secret
+  namespace: default
+type: Opaque
+data:
+  # Base64 encoded Retell API key - replace with actual key
+  # echo -n "key_your_actual_retell_api_key_here" | base64
+  RETELL_API_KEY:
+
+---
+# ServiceAccount for pod listing permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: retell-caller
+  namespace: default
+
+---
+# ClusterRole for listing pods (needed for sharding)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: retell-caller-role
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "get"]
+
+---
+# RoleBinding to grant permissions to ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: retell-caller-binding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: retell-caller
+    namespace: default
+roleRef:
+  kind: Role
+  name: retell-caller-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Service for HTTP endpoints
+apiVersion: v1
+kind: Service
+metadata:
+  name: retell-caller-service
+  namespace: default
+  labels:
+    app: retell-caller
+spec:
+  selector:
+    app: retell-caller
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+  type: ClusterIP
+
+---
+# DaemonSet for running one pod per node
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: retell-caller
+  namespace: default
+  labels:
+    app: retell-caller
+spec:
+  selector:
+    matchLabels:
+      app: retell-caller
+  template:
+    metadata:
+      labels:
+        app: retell-caller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: retell-caller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+        - name: retell-caller
+          image: retell-caller:0.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          env:
+            # Pod information via Downward API
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          # Database credentials from existing secret
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+            - secretRef:
+                name: retell-api-secret
+            - configMapRef:
+                name: retell-processor-config
+            - configMapRef:
+                name: retell-caller-config
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: var-cache
+              mountPath: /var/cache
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: var-cache
+          emptyDir: {}
+      # Node selection and tolerations
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        # Allow scheduling on master nodes if needed
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        # Tolerate node not ready conditions
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 300
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 300
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+---
+# PodDisruptionBudget to ensure availability during updates
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: retell-caller-pdb
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: retell-caller
+# ---
+# # NetworkPolicy for security (optional)
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: retell-caller-netpol
+#   namespace: default
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app: retell-caller
+#   policyTypes:
+#     - Ingress
+#     - Egress
+#   ingress:
+#     # Allow ingress from other pods in the namespace for webhooks
+#     - from:
+#         - namespaceSelector:
+#             matchLabels:
+#               name: default
+#       ports:
+#         - protocol: TCP
+#           port: 3000
+#     # Allow ingress from monitoring systems
+#     - from: []
+#       ports:
+#         - protocol: TCP
+#           port: 3000
+#   egress:
+#     # Allow egress to PostgreSQL
+#     - to:
+#         - podSelector:
+#             matchLabels:
+#               app: postgres
+#       ports:
+#         - protocol: TCP
+#           port: 5432
+#     # Allow egress to Kubernetes API
+#     - to: []
+#       ports:
+#         - protocol: TCP
+#           port: 443
+#         - protocol: TCP
+#           port: 6443
+#     # Allow egress to Retell API (HTTPS)
+#     - to: []
+#       ports:
+#         - protocol: TCP
+#           port: 443
+#     # Allow DNS resolution
+#     - to: []
+#       ports:
+#         - protocol: UDP
+#           port: 53
+#         - protocol: TCP
+#           port: 53
