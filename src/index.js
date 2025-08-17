@@ -124,7 +124,7 @@ class RetellCaller {
             // Initial processing run
             await this.processSurveyResponses();
 
-            logger.info('Retell Processor service started successfully');
+            logger.info('Retell Caller service started successfully');
 
         } catch (error) {
             logger.error({ err: error }, 'Failed to start service');
@@ -317,7 +317,7 @@ class RetellCaller {
 if (require.main === module) {
     const processor = new RetellCaller();
     processor.start().catch((error) => {
-        logger.error({ err: error }, 'Failed to start Retell Processor');
+        logger.error({ err: error }, 'Failed to start Retell Caller service');
         process.exit(1);
     });
 }

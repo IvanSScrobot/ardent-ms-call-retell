@@ -16,7 +16,7 @@ class ShardingManager {
 
         this.podName = process.env.POD_NAME;
         this.podNamespace = process.env.POD_NAMESPACE || 'default';
-        this.daemonSetName = process.env.DAEMONSET_NAME || 'retell-processor';
+        this.daemonSetName = process.env.DAEMONSET_NAME || 'retell-caller';
 
         // Cache shard info to avoid frequent API calls
         this.shardInfo = null;

@@ -49,6 +49,7 @@ class RetellClient {
             }, 'Creating Retell phone call');
 
             const phoneCallResponse = await this.client.call.createPhoneCall(callPayload);
+            //  https://docs.retellai.com/api-references/create-phone-call
 
             // Store call correlation for webhook processing
             this.activeCalls.set(phoneCallResponse.call_id, {
@@ -62,7 +63,8 @@ class RetellClient {
                 surveyId: surveyData.survey_id,
                 callId: phoneCallResponse.call_id,
                 agentId: phoneCallResponse.agent_id,
-                metadata: phoneCallResponse.metadata
+                metadata: phoneCallResponse.metadata,
+                transcript: phoneCallResponse.transcript
             }, 'Retell phone call created successfully');
 
             return phoneCallResponse;
@@ -82,60 +84,60 @@ class RetellClient {
      * @param {Object} webhookPayload - Webhook payload from Retell
      * @returns {Promise<Object>} Processing result
      */
-    async handleWebhook(webhookPayload) {
-        try {
-            const { event, call } = webhookPayload;
+    // async handleWebhook(webhookPayload) {
+    //     try {
+    //         const { event, call } = webhookPayload;
 
-            logger.info({
-                event,
-                callId: call.call_id,
-                callStatus: call.call_status,
-                surveyId: call.metadata?.survey_id
-            }, 'Received Retell webhook');
+    //         logger.info({
+    //             event,
+    //             callId: call.call_id,
+    //             callStatus: call.call_status,
+    //             surveyId: call.metadata?.survey_id
+    //         }, 'Received Retell webhook');
 
-            if (event === 'call_ended') {
-                const surveyId = call.metadata?.survey_id;
+    //         if (event === 'call_ended') {
+    //             const surveyId = call.metadata?.survey_id;
 
-                if (!surveyId) {
-                    logger.warn({ callId: call.call_id }, 'Webhook missing survey_id in metadata');
-                    return { success: false, reason: 'Missing survey_id' };
-                }
+    //             if (!surveyId) {
+    //                 logger.warn({ callId: call.call_id }, 'Webhook missing survey_id in metadata');
+    //                 return { success: false, reason: 'Missing survey_id' };
+    //             }
 
-                // Remove from active calls tracking
-                const callInfo = this.activeCalls.get(call.call_id);
-                if (callInfo) {
-                    this.activeCalls.delete(call.call_id);
+    //             // Remove from active calls tracking
+    //             const callInfo = this.activeCalls.get(call.call_id);
+    //             if (callInfo) {
+    //                 this.activeCalls.delete(call.call_id);
 
-                    const duration = new Date() - callInfo.createdAt;
-                    logger.info({
-                        surveyId,
-                        callId: call.call_id,
-                        duration,
-                        disconnectionReason: call.disconnection_reason,
-                        customerName: callInfo.customerName
-                    }, 'Call completed, ready to mark as processed');
-                }
+    //                 const duration = new Date() - callInfo.createdAt;
+    //                 logger.info({
+    //                     surveyId,
+    //                     callId: call.call_id,
+    //                     duration,
+    //                     disconnectionReason: call.disconnection_reason,
+    //                     customerName: callInfo.customerName
+    //                 }, 'Call completed, ready to mark as processed');
+    //             }
 
-                return {
-                    success: true,
-                    surveyId: parseInt(surveyId, 10),
-                    callId: call.call_id,
-                    callStatus: call.call_status,
-                    disconnectionReason: call.disconnection_reason,
-                    transcript: call.transcript
-                };
-            }
+    //             return {
+    //                 success: true,
+    //                 surveyId: parseInt(surveyId, 10),
+    //                 callId: call.call_id,
+    //                 callStatus: call.call_status,
+    //                 disconnectionReason: call.disconnection_reason,
+    //                 transcript: call.transcript
+    //             };
+    //         }
 
-            // Handle other events if needed (call_analyzed, etc.)
-            logger.debug({ event, callId: call.call_id }, 'Received non-call_ended webhook event');
+    //         // Handle other events if needed (call_analyzed, etc.)
+    //         logger.debug({ event, callId: call.call_id }, 'Received non-call_ended webhook event');
 
-            return { success: true, event, processed: false };
+    //         return { success: true, event, processed: false };
 
-        } catch (error) {
-            logger.error({ err: error, webhookPayload }, 'Failed to handle Retell webhook');
-            throw error;
-        }
-    }
+    //     } catch (error) {
+    //         logger.error({ err: error, webhookPayload }, 'Failed to handle Retell webhook');
+    //         throw error;
+    //     }
+    // }
 
     /**
      * Get call status from Retell API (for polling fallback if needed)
@@ -205,7 +207,7 @@ class RetellClient {
      * @param {number} baseDelay - Base delay in milliseconds
      * @returns {Promise<any>} Result of the operation
      */
-    async withRetry(operation, maxRetries = 3, baseDelay = 1000) {
+    async withRetry(operation, maxRetries = 5, baseDelay = 1000) {
         let lastError;
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {

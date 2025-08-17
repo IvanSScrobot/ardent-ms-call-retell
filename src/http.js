@@ -62,7 +62,7 @@ class HttpServer {
         this.app.get('/metrics', this.metricsEndpoint.bind(this));
 
         // Retell webhook endpoint
-        this.app.post('/retell/webhook', this.handleRetellWebhook.bind(this));
+        // this.app.post('/retell/webhook', this.handleRetellWebhook.bind(this));
 
         // Debug endpoints (only in development)
         if (process.env.NODE_ENV === 'development') {
@@ -235,50 +235,50 @@ class HttpServer {
     /**
      * Handle Retell webhook for call completion
      */
-    async handleRetellWebhook(req, res) {
-        try {
-            const webhookPayload = req.body;
+    // async handleRetellWebhook(req, res) {
+    //     try {
+    //         const webhookPayload = req.body;
 
-            logger.info({
-                event: webhookPayload.event,
-                callId: webhookPayload.call?.call_id,
-                surveyId: webhookPayload.call?.metadata?.survey_id
-            }, 'Received Retell webhook');
+    //         logger.info({
+    //             event: webhookPayload.event,
+    //             callId: webhookPayload.call?.call_id,
+    //             surveyId: webhookPayload.call?.metadata?.survey_id
+    //         }, 'Received Retell webhook');
 
-            // Process the webhook
-            const result = await this.retellClient.handleWebhook(webhookPayload);
+    //         // Process the webhook
+    //         const result = await this.retellClient.handleWebhook(webhookPayload);
 
-            if (result.success && result.surveyId && webhookPayload.event === 'call_ended') {
-                // Mark the survey response as sent to Retell
-                const updated = await this.dbClient.markAsSentToRetell(result.surveyId);
+    //         if (result.success && result.surveyId && webhookPayload.event === 'call_ended') {
+    //             // Mark the survey response as sent to Retell
+    //             const updated = await this.dbClient.markAsSentToRetell(result.surveyId);
 
-                if (updated) {
-                    logger.info({
-                        surveyId: result.surveyId,
-                        callId: result.callId
-                    }, 'Successfully processed call completion webhook');
-                } else {
-                    logger.warn({
-                        surveyId: result.surveyId,
-                        callId: result.callId
-                    }, 'Failed to update survey response after call completion');
-                }
-            }
+    //             if (updated) {
+    //                 logger.info({
+    //                     surveyId: result.surveyId,
+    //                     callId: result.callId
+    //                 }, 'Successfully processed call completion webhook');
+    //             } else {
+    //                 logger.warn({
+    //                     surveyId: result.surveyId,
+    //                     callId: result.callId
+    //                 }, 'Failed to update survey response after call completion');
+    //             }
+    //         }
 
-            res.status(200).json({ received: true, processed: result.success });
+    //         res.status(200).json({ received: true, processed: result.success });
 
-        } catch (error) {
-            logger.error({
-                err: error,
-                body: req.body
-            }, 'Failed to handle Retell webhook');
+    //     } catch (error) {
+    //         logger.error({
+    //             err: error,
+    //             body: req.body
+    //         }, 'Failed to handle Retell webhook');
 
-            res.status(500).json({
-                error: 'Failed to process webhook',
-                message: error.message
-            });
-        }
-    }
+    //         res.status(500).json({
+    //             error: 'Failed to process webhook',
+    //             message: error.message
+    //         });
+    //     }
+    // }
 
     /**
      * Debug endpoint for shard information (development only)
@@ -326,10 +326,10 @@ class HttpServer {
         return new Promise((resolve, reject) => {
             this.server = this.app.listen(port, (err) => {
                 if (err) {
-                    logger.error({ err, port }, 'Failed to start HTTP server');
+                    logger.error({ err, port }, 'Failed to start HTTP server for Caller');
                     reject(err);
                 } else {
-                    logger.info({ port }, 'HTTP server started successfully');
+                    logger.info({ port }, 'Caller HTTP server started successfully');
                     resolve();
                 }
             });

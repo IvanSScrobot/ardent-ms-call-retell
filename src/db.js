@@ -79,7 +79,7 @@ class DatabaseClient {
           AND sr.processed IS NOT TRUE
           AND sr.data_sent_to_retell IS NOT TRUE
           AND c.phone_number_validated IS TRUE
-          AND (sr.id % $1) = ($2 - 1)
+          AND (sr.id % $2) = ($1 - 1)
         ORDER BY
           CASE
             WHEN sr.operational_frustration ILIKE '%extremely%'  THEN 1
@@ -92,7 +92,7 @@ class DatabaseClient {
         FOR UPDATE SKIP LOCKED
       `;
 
-            const result = await client.query(query, [totalShards, shardIndex]);
+            const result = await client.query(query, [shardIndex, totalShards]);
 
             await client.query('COMMIT');
 
@@ -129,36 +129,36 @@ class DatabaseClient {
      * @param {number} surveyId - The survey response ID
      * @returns {Promise<boolean>} Success status
      */
-    async markAsSentToRetell(surveyId) {
-        const client = await this.pool.connect();
+    // async markAsSentToRetell(surveyId) {
+    //     const client = await this.pool.connect();
 
-        try {
-            const query = `
-        UPDATE ${this.tableName} 
-        SET data_sent_to_retell = TRUE, updated_at = NOW() 
-        WHERE id = $1
-      `;
+    //     try {
+    //         const query = `
+    //     UPDATE ${this.tableName} 
+    //     SET data_sent_to_retell = TRUE, updated_at = NOW() 
+    //     WHERE id = $1
+    //   `;
 
-            const result = await client.query(query, [surveyId]);
+    //         const result = await client.query(query, [surveyId]);
 
-            if (result.rowCount === 0) {
-                logger.warn({ surveyId }, 'No rows updated when marking as sent to Retell');
-                return false;
-            }
+    //         if (result.rowCount === 0) {
+    //             logger.warn({ surveyId }, 'No rows updated when marking as sent to Retell');
+    //             return false;
+    //         }
 
-            logger.info({ surveyId }, 'Marked survey response as sent to Retell');
-            return true;
+    //         logger.info({ surveyId }, 'Marked survey response as sent to Retell');
+    //         return true;
 
-        } catch (error) {
-            logger.error({
-                err: error,
-                surveyId
-            }, 'Failed to mark survey response as sent to Retell');
-            throw error;
-        } finally {
-            client.release();
-        }
-    }
+    //     } catch (error) {
+    //         logger.error({
+    //             err: error,
+    //             surveyId
+    //         }, 'Failed to mark survey response as sent to Retell');
+    //         throw error;
+    //     } finally {
+    //         client.release();
+    //     }
+    // }
 
     /**
      * Get survey response by ID for webhook processing
