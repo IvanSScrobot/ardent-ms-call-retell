@@ -41,7 +41,7 @@ class DatabaseClient {
      * @param {number} totalShards - Total number of shards (pods)
      * @returns {Promise<Object|null>} Survey response row or null if none available
      */
-    async getNextSurveyResponse(shardIndex, totalShards) {
+    async getNextSurveyResponse(shardIndex, totalShards, activeSurveys) {
         const client = await this.pool.connect();
 
         try {
@@ -80,6 +80,7 @@ class DatabaseClient {
           AND sr.data_sent_to_retell IS NOT TRUE
           AND c.phone_number_validated IS TRUE
           AND (sr.id % $2) = ($1 - 1)
+          AND sr.id <> ALL($3::int[]) 
         ORDER BY
           CASE
             WHEN sr.operational_frustration ILIKE '%extremely%'  THEN 1
@@ -91,8 +92,9 @@ class DatabaseClient {
         LIMIT 1
         FOR UPDATE SKIP LOCKED
       `;
-
-            const result = await client.query(query, [shardIndex, totalShards]);
+            const activeSurveyIds = [...activeSurveys.keys()]
+                .filter((x) => Number.isInteger(x)); // also removes null/undefined
+            const result = await client.query(query, [shardIndex, totalShards, activeSurveyIds]);
 
             await client.query('COMMIT');
 
@@ -102,12 +104,8 @@ class DatabaseClient {
             }
 
             const row = result.rows[0];
-            logger.info({
-                surveyId: row.survey_id,
-                shardIndex,
-                totalShards,
-                customerName: row.customer_name
-            }, 'Retrieved survey response for processing');
+            // const rows = result.rows;
+            // logger.info('Retrieved surveys response for processing ', len(rows));
 
             return row;
 

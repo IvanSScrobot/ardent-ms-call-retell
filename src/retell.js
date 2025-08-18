@@ -12,6 +12,17 @@ class RetellClient {
 
         // Store active calls for correlation with webhooks
         this.activeCalls = new Map();
+        // Track surveys being processed to prevent duplicates
+        this.activeSurveys = new Map(); // surveyId -> { callId, createdAt, customerName, phoneNumber }
+    }
+
+    /**
+     * Check if a survey is already being processed
+     * @param {number} surveyId - Survey ID to check
+     * @returns {boolean} True if survey is already being processed
+     */
+    isSurveyBeingProcessed(surveyId) {
+        return this.activeSurveys.has(surveyId);
     }
 
     /**
@@ -20,6 +31,20 @@ class RetellClient {
      * @returns {Promise<Object>} Call creation response
      */
     async createPhoneCall(surveyData) {
+        const surveyId = surveyData.survey_id;
+
+        // Check if this survey is already being processed
+        if (this.isSurveyBeingProcessed(surveyId)) {
+            const existingCall = this.activeSurveys.get(surveyId);
+            logger.warn({
+                surveyId,
+                existingCallId: existingCall.callId,
+                customerName: surveyData.customer_name
+            }, 'Survey is already being processed - skipping duplicate call creation');
+
+            throw new Error(`Survey ${surveyId} is already being processed`);
+        }
+
         try {
             const callPayload = {
                 from_number: this.fromNumber,
@@ -37,34 +62,40 @@ class RetellClient {
                     survey_date: surveyData.survey_date
                 },
                 metadata: {
-                    survey_id: surveyData.survey_id.toString()
+                    survey_id: surveyId.toString()
                 },
                 override_agent_id: this.agentId
             };
 
             logger.info({
-                surveyId: surveyData.survey_id,
+                surveyId,
                 toNumber: surveyData.client_phone_number,
                 customerName: surveyData.customer_name
             }, 'Creating Retell phone call');
 
             const phoneCallResponse = await this.client.call.createPhoneCall(callPayload);
-            //  https://docs.retellai.com/api-references/create-phone-call
 
             // Store call correlation for webhook processing
             this.activeCalls.set(phoneCallResponse.call_id, {
-                surveyId: surveyData.survey_id,
+                surveyId,
+                createdAt: new Date(),
+                customerName: surveyData.customer_name,
+                phoneNumber: surveyData.client_phone_number
+            });
+
+            // Track survey as being processed
+            this.activeSurveys.set(surveyId, {
+                callId: phoneCallResponse.call_id,
                 createdAt: new Date(),
                 customerName: surveyData.customer_name,
                 phoneNumber: surveyData.client_phone_number
             });
 
             logger.info({
-                surveyId: surveyData.survey_id,
+                surveyId,
                 callId: phoneCallResponse.call_id,
                 agentId: phoneCallResponse.agent_id,
-                metadata: phoneCallResponse.metadata,
-                transcript: phoneCallResponse.transcript
+                metadata: phoneCallResponse.metadata
             }, 'Retell phone call created successfully');
 
             return phoneCallResponse;
@@ -72,7 +103,7 @@ class RetellClient {
         } catch (error) {
             logger.error({
                 err: error,
-                surveyId: surveyData.survey_id,
+                surveyId,
                 toNumber: surveyData.client_phone_number
             }, 'Failed to create Retell phone call');
             throw error;
@@ -103,6 +134,8 @@ class RetellClient {
     //                 return { success: false, reason: 'Missing survey_id' };
     //             }
 
+    //             const surveyIdInt = parseInt(surveyId, 10);
+
     //             // Remove from active calls tracking
     //             const callInfo = this.activeCalls.get(call.call_id);
     //             if (callInfo) {
@@ -110,7 +143,7 @@ class RetellClient {
 
     //                 const duration = new Date() - callInfo.createdAt;
     //                 logger.info({
-    //                     surveyId,
+    //                     surveyId: surveyIdInt,
     //                     callId: call.call_id,
     //                     duration,
     //                     disconnectionReason: call.disconnection_reason,
@@ -118,9 +151,18 @@ class RetellClient {
     //                 }, 'Call completed, ready to mark as processed');
     //             }
 
+    //             // Remove from active surveys tracking
+    //             if (this.activeSurveys.has(surveyIdInt)) {
+    //                 this.activeSurveys.delete(surveyIdInt);
+    //                 logger.debug({
+    //                     surveyId: surveyIdInt,
+    //                     callId: call.call_id
+    //                 }, 'Removed survey from active processing list');
+    //             }
+
     //             return {
     //                 success: true,
-    //                 surveyId: parseInt(surveyId, 10),
+    //                 surveyId: surveyIdInt,
     //                 callId: call.call_id,
     //                 callStatus: call.call_status,
     //                 disconnectionReason: call.disconnection_reason,
@@ -163,20 +205,30 @@ class RetellClient {
     }
 
     /**
-     * Cleanup old active calls (in case webhooks are missed)
+     * Cleanup old active calls and surveys (in case webhooks are missed)
      * @param {number} maxAgeMs - Maximum age in milliseconds
      */
     cleanupOldCalls(maxAgeMs = 30 * 60 * 1000) { // 30 minutes default
         const now = new Date();
-        const toRemove = [];
+        const callsToRemove = [];
+        const surveysToRemove = [];
 
+        // Cleanup old active calls
         for (const [callId, callInfo] of this.activeCalls.entries()) {
             if (now - callInfo.createdAt > maxAgeMs) {
-                toRemove.push(callId);
+                callsToRemove.push(callId);
             }
         }
 
-        for (const callId of toRemove) {
+        // Cleanup old active surveys
+        for (const [surveyId, surveyInfo] of this.activeSurveys.entries()) {
+            if (now - surveyInfo.createdAt > maxAgeMs) {
+                surveysToRemove.push(surveyId);
+            }
+        }
+
+        // Remove old calls
+        for (const callId of callsToRemove) {
             const callInfo = this.activeCalls.get(callId);
             this.activeCalls.delete(callId);
 
@@ -187,8 +239,23 @@ class RetellClient {
             }, 'Cleaned up old active call (possible missed webhook)');
         }
 
-        if (toRemove.length > 0) {
-            logger.info({ cleanedUp: toRemove.length }, 'Cleaned up old active calls');
+        // Remove old surveys
+        for (const surveyId of surveysToRemove) {
+            const surveyInfo = this.activeSurveys.get(surveyId);
+            this.activeSurveys.delete(surveyId);
+
+            logger.warn({
+                surveyId,
+                callId: surveyInfo.callId,
+                age: now - surveyInfo.createdAt
+            }, 'Cleaned up old active survey (possible missed webhook) - will allow retry');
+        }
+
+        if (callsToRemove.length > 0 || surveysToRemove.length > 0) {
+            logger.info({
+                cleanedUpCalls: callsToRemove.length,
+                cleanedUpSurveys: surveysToRemove.length
+            }, 'Cleaned up old active calls and surveys');
         }
     }
 
@@ -201,13 +268,29 @@ class RetellClient {
     }
 
     /**
+     * Get active surveys count for monitoring
+     * @returns {number} Number of active surveys
+     */
+    getActiveSurveysCount() {
+        return this.activeSurveys.size;
+    }
+
+    /**
+     * Get list of active survey IDs for debugging
+     * @returns {number[]} Array of active survey IDs
+     */
+    getActiveSurveyIds() {
+        return Array.from(this.activeSurveys.keys());
+    }
+
+    /**
      * Retry mechanism with exponential backoff for Retell API calls
      * @param {Function} operation - The operation to retry
      * @param {number} maxRetries - Maximum number of retries
      * @param {number} baseDelay - Base delay in milliseconds
      * @returns {Promise<any>} Result of the operation
      */
-    async withRetry(operation, maxRetries = 5, baseDelay = 1000) {
+    async withRetry(operation, maxRetries = 3, baseDelay = 1000) {
         let lastError;
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -218,6 +301,11 @@ class RetellClient {
 
                 // Don't retry on certain HTTP status codes
                 if (error.status === 400 || error.status === 401 || error.status === 403) {
+                    throw error;
+                }
+
+                // Don't retry if survey is already being processed
+                if (error.message && error.message.includes('already being processed')) {
                     throw error;
                 }
 

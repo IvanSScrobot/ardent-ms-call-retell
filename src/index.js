@@ -148,7 +148,7 @@ class RetellCaller {
             logger.debug({ shardIndex, totalShards }, 'Processing survey responses for shard');
 
             // Get next survey response for this shard
-            const surveyData = await this.dbClient.getNextSurveyResponse(shardIndex, totalShards);
+            const surveyData = await this.dbClient.getNextSurveyResponse(shardIndex, totalShards, this.retellClient.activeSurveys);
 
             if (!surveyData) {
                 logger.debug({ shardIndex, totalShards }, 'No eligible survey responses found for this shard');
@@ -173,6 +173,15 @@ class RetellCaller {
         const surveyId = surveyData.survey_id;
 
         try {
+            // Check if this survey is already being processed
+            if (this.retellClient.isSurveyBeingProcessed(surveyId)) {
+                logger.debug({
+                    surveyId,
+                    customerName: surveyData.customer_name
+                }, 'Survey is already being processed - skipping');
+                return;
+            }
+
             logger.info({
                 surveyId,
                 customerName: surveyData.customer_name,
@@ -196,6 +205,15 @@ class RetellCaller {
             // when the call actually completes
 
         } catch (error) {
+            // Check if this is a duplicate processing error
+            if (error.message && error.message.includes('already being processed')) {
+                logger.debug({
+                    surveyId,
+                    customerName: surveyData.customer_name
+                }, 'Survey already being processed by another instance - skipping');
+                return;
+            }
+
             logger.error({
                 err: error,
                 surveyId,

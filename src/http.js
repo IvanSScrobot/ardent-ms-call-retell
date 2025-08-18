@@ -158,6 +158,7 @@ class HttpServer {
         try {
             const shardStats = await this.shardingManager.getShardStats();
             const activeCallsCount = this.retellClient.getActiveCallsCount();
+            const activeSurveysCount = this.retellClient.getActiveSurveysCount();
 
             const status = {
                 service: 'retell-processor',
@@ -167,6 +168,7 @@ class HttpServer {
                 uptime: process.uptime(),
                 shard: shardStats,
                 activeCalls: activeCallsCount,
+                activeSurveys: activeSurveysCount,
                 memory: process.memoryUsage(),
                 config: {
                     scanInterval: process.env.SCAN_INTERVAL_MS || 10000,
@@ -193,6 +195,7 @@ class HttpServer {
         try {
             const shardStats = await this.shardingManager.getShardStats();
             const activeCallsCount = this.retellClient.getActiveCallsCount();
+            const activeSurveysCount = this.retellClient.getActiveSurveysCount();
             const memUsage = process.memoryUsage();
 
             // Simple text metrics format
@@ -204,6 +207,10 @@ class HttpServer {
                 `# HELP retell_processor_active_calls Number of active Retell calls`,
                 `# TYPE retell_processor_active_calls gauge`,
                 `retell_processor_active_calls ${activeCallsCount}`,
+                ``,
+                `# HELP retell_processor_active_surveys Number of surveys being processed`,
+                `# TYPE retell_processor_active_surveys gauge`,
+                `retell_processor_active_surveys ${activeSurveysCount}`,
                 ``,
                 `# HELP retell_processor_shard_index Current shard index`,
                 `# TYPE retell_processor_shard_index gauge`,
@@ -308,11 +315,14 @@ class HttpServer {
     async debugCalls(req, res) {
         try {
             const activeCallsCount = this.retellClient.getActiveCallsCount();
+            const activeSurveysCount = this.retellClient.getActiveSurveysCount();
+            const activeSurveyIds = this.retellClient.getActiveSurveyIds();
 
             res.status(200).json({
                 activeCallsCount,
-                // Don't expose actual call data for privacy
-                message: 'Active calls are being tracked internally'
+                activeSurveysCount,
+                activeSurveyIds: activeSurveyIds.slice(0, 10), // Limit to first 10 for privacy
+                message: 'Active calls and surveys are being tracked internally'
             });
         } catch (error) {
             res.status(500).json({ error: error.message });
