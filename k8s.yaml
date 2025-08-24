@@ -11,6 +11,7 @@ data:
   # DB_NAME: "ardent_survey"
   # DB_TABLE_NAME: "survey_responses"
   SCAN_INTERVAL_MS: "10000"
+  ODOO_SCAN_INTERVAL_MS: "15000"
   CLEANUP_INTERVAL_MS: "300000"
   PORT: "3000"
   NODE_ENV: "production"
@@ -141,7 +142,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-          # Database credentials from existing secret
+            - name: ODOO_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: retell-processor-secrets
+                  key: ODOO_API_KEY
+          #  credentials from existing secrets and configmaps
           envFrom:
             - secretRef:
                 name: postgres-credentials

@@ -3,6 +3,7 @@ const DatabaseClient = require('./db');
 const RetellClient = require('./retell');
 const ShardingManager = require('./sharding');
 const HttpServer = require('./http');
+const OdooService = require('./odooService');
 
 class RetellCaller {
     constructor() {
@@ -10,12 +11,15 @@ class RetellCaller {
         this.retellClient = null;
         this.shardingManager = null;
         this.httpServer = null;
+        this.odooService = null;
         this.processingInterval = null;
+        this.odooProcessingInterval = null;
         this.cleanupInterval = null;
         this.isShuttingDown = false;
 
         // Configuration
         this.scanIntervalMs = parseInt(process.env.SCAN_INTERVAL_MS, 10) || 10000;
+        this.odooScanIntervalMs = parseInt(process.env.ODOO_SCAN_INTERVAL_MS, 10) || 15000; // 15 seconds for Odoo processing
         this.cleanupIntervalMs = parseInt(process.env.CLEANUP_INTERVAL_MS, 10) || 300000; // 5 minutes
 
         // Bind signal handlers
@@ -36,7 +40,17 @@ class RetellCaller {
             this.dbClient = new DatabaseClient();
             this.retellClient = new RetellClient();
             this.shardingManager = new ShardingManager();
-            this.httpServer = new HttpServer(this.dbClient, this.retellClient, this.shardingManager);
+
+            // Initialize Odoo service if environment variables are present
+            try {
+                this.odooService = new OdooService();
+                logger.info('Odoo service initialized successfully');
+            } catch (error) {
+                logger.warn({ err: error }, 'Odoo service initialization failed - Odoo integration will be disabled');
+                this.odooService = null;
+            }
+
+            this.httpServer = new HttpServer(this.dbClient, this.retellClient, this.shardingManager, this.odooService);
 
             // Test database connection
             const dbHealthy = await this.dbClient.healthCheck();
@@ -109,6 +123,15 @@ class RetellCaller {
                 this.scanIntervalMs
             );
 
+            // Start Odoo processing loop if Odoo service is available
+            if (this.odooService) {
+                this.odooProcessingInterval = setInterval(
+                    this.processOdooLeads.bind(this),
+                    this.odooScanIntervalMs
+                );
+                logger.info('Odoo processing loop started');
+            }
+
             // Start cleanup loop for old active calls
             this.cleanupInterval = setInterval(
                 this.cleanupOldCalls.bind(this),
@@ -123,6 +146,11 @@ class RetellCaller {
 
             // Initial processing run
             await this.processSurveyResponses();
+
+            // Initial Odoo processing run if available
+            if (this.odooService) {
+                await this.processOdooLeads();
+            }
 
             logger.info('Retell Caller service started successfully');
 
@@ -145,7 +173,7 @@ class RetellCaller {
             // Get current shard information
             const { shardIndex, totalShards } = await this.shardingManager.getShardInfo();
 
-            logger.debug({ shardIndex, totalShards }, 'Processing survey responses for shard');
+            logger.info({ shardIndex, totalShards }, 'Processing survey responses for shard');
 
             // Get next survey response for this shard
             const surveyData = await this.dbClient.getNextSurveyResponse(shardIndex, totalShards, this.retellClient.activeSurveys);
@@ -235,6 +263,133 @@ class RetellCaller {
     }
 
     /**
+     * Process completed surveys for Odoo lead creation
+     */
+    async processOdooLeads() {
+        if (this.isShuttingDown || !this.odooService) {
+            return;
+        }
+
+        try {
+            // Get current shard information
+            const { shardIndex, totalShards } = await this.shardingManager.getShardInfo();
+
+            logger.debug({ shardIndex, totalShards }, 'Processing Odoo leads for shard');
+
+            // Get next processed survey response for Odoo integration
+            const surveyData = await this.dbClient.getNextProcessedSurveyForOdoo(shardIndex, totalShards);
+
+            if (!surveyData) {
+                logger.debug({ shardIndex, totalShards }, 'No processed survey responses found for Odoo integration');
+                return;
+            }
+
+            // Process the survey for Odoo lead creation
+            await this.processSingleOdooLead(surveyData);
+
+        } catch (error) {
+            logger.error({ err: error }, 'Error in Odoo processing loop');
+            // Don't exit on processing errors, just log and continue
+        }
+    }
+
+    /**
+     * Process a single survey response for Odoo lead creation
+     */
+    async processSingleOdooLead(surveyData) {
+        const surveyId = surveyData.survey_id;
+
+        try {
+            logger.info({
+                surveyId,
+                customerName: surveyData.customer_name,
+                email: surveyData.client_email
+            }, 'Processing survey for Odoo lead creation');
+
+            // Prepare lead data for Odoo
+            const leadData = {
+                customerName: surveyData.customer_name,
+                surveyId: surveyId,
+                phone: surveyData.client_phone_number,
+                email: surveyData.client_email,
+                summary: surveyData.summary
+            };
+
+            // Create lead in Odoo with retry logic
+            const leadResult = await this.retryOperation(
+                () => this.odooService.createLead(leadData),
+                3, // max retries
+                5000 // base delay
+            );
+
+            if (leadResult.success) {
+                // Mark survey as sent to Odoo
+                const updated = await this.dbClient.markAsSentToOdoo(surveyId);
+
+                if (updated) {
+                    logger.info({
+                        surveyId,
+                        leadId: leadResult.leadId,
+                        customerName: surveyData.customer_name
+                    }, 'Successfully created Odoo lead and marked survey as sent');
+                } else {
+                    logger.warn({
+                        surveyId,
+                        leadId: leadResult.leadId
+                    }, 'Created Odoo lead but failed to update survey status');
+                }
+            }
+
+        } catch (error) {
+            logger.error({
+                err: error,
+                surveyId,
+                customerName: surveyData.customer_name
+            }, 'Failed to process survey for Odoo lead creation');
+
+            // Depending on the error type, we might want to mark it as failed
+            // or let it retry on the next processing cycle
+            if (error.message && (error.message.includes('authentication') || error.message.includes('credentials'))) {
+                logger.warn({
+                    surveyId,
+                    error: error.message
+                }, 'Odoo authentication error - will retry later');
+            }
+        }
+    }
+
+    /**
+     * Generic retry mechanism with exponential backoff
+     */
+    async retryOperation(operation, maxRetries = 3, baseDelay = 1000) {
+        let lastError;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                return await operation();
+            } catch (error) {
+                lastError = error;
+
+                if (attempt === maxRetries) {
+                    break;
+                }
+
+                const delay = baseDelay * Math.pow(2, attempt - 1) + Math.random() * 1000; // Add jitter
+                logger.warn({
+                    err: error,
+                    attempt,
+                    maxRetries,
+                    delayMs: delay
+                }, 'Operation failed, retrying');
+
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+
+        throw lastError;
+    }
+
+    /**
      * Handle shard configuration changes
      */
     async handleShardChange({ oldShards, newShards }) {
@@ -301,6 +456,11 @@ class RetellCaller {
             if (this.processingInterval) {
                 clearInterval(this.processingInterval);
                 this.processingInterval = null;
+            }
+
+            if (this.odooProcessingInterval) {
+                clearInterval(this.odooProcessingInterval);
+                this.odooProcessingInterval = null;
             }
 
             if (this.cleanupInterval) {

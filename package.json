@@ -28,7 +28,8 @@
         "retell-sdk": "^4.43.0",
         "@kubernetes/client-node": "^0.20.0",
         "helmet": "^7.0.0",
-        "cors": "^2.8.5"
+        "cors": "^2.8.5",
+        "axios": "^1.6.0"
     },
     "devDependencies": {
         "nodemon": "^3.0.1",

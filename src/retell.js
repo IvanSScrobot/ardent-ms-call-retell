@@ -13,7 +13,7 @@ class RetellClient {
         // Store active calls for correlation with webhooks
         this.activeCalls = new Map();
         // Track surveys being processed to prevent duplicates
-        this.activeSurveys = new Map(); // surveyId -> { callId, createdAt, customerName, phoneNumber }
+        this.activeSurveys = new Map(); // surveyId -> { createdAt, customerName, phoneNumber }
     }
 
     /**
@@ -38,7 +38,7 @@ class RetellClient {
             const existingCall = this.activeSurveys.get(surveyId);
             logger.warn({
                 surveyId,
-                existingCallId: existingCall.callId,
+                // existingCallId: existingCall.callId,
                 customerName: surveyData.customer_name
             }, 'Survey is already being processed - skipping duplicate call creation');
 
@@ -73,6 +73,14 @@ class RetellClient {
                 customerName: surveyData.customer_name
             }, 'Creating Retell phone call');
 
+            // Track survey as being processed
+            this.activeSurveys.set(surveyId, {
+                // callId: phoneCallResponse.call_id,
+                createdAt: new Date(),
+                customerName: surveyData.customer_name,
+                phoneNumber: surveyData.client_phone_number
+            });
+
             const phoneCallResponse = await this.client.call.createPhoneCall(callPayload);
 
             // Store call correlation for webhook processing
@@ -83,17 +91,9 @@ class RetellClient {
                 phoneNumber: surveyData.client_phone_number
             });
 
-            // Track survey as being processed
-            this.activeSurveys.set(surveyId, {
-                callId: phoneCallResponse.call_id,
-                createdAt: new Date(),
-                customerName: surveyData.customer_name,
-                phoneNumber: surveyData.client_phone_number
-            });
-
             logger.info({
                 surveyId,
-                callId: phoneCallResponse.call_id,
+                // callId: phoneCallResponse.call_id,
                 agentId: phoneCallResponse.agent_id,
                 metadata: phoneCallResponse.metadata
             }, 'Retell phone call created successfully');

@@ -77,7 +77,6 @@ class DatabaseClient {
           c.phone_number IS NOT NULL
           AND c.phone_number <> ''
           AND sr.processed IS NOT TRUE
-          AND sr.data_sent_to_retell IS NOT TRUE
           AND c.phone_number_validated IS TRUE
           AND (sr.id % $2) = ($1 - 1)
           AND sr.id <> ALL($3::int[]) 
@@ -105,7 +104,13 @@ class DatabaseClient {
 
             const row = result.rows[0];
             // const rows = result.rows;
-            // logger.info('Retrieved surveys response for processing ', len(rows));
+            logger.info('Processing survey response', {
+                surveyId: row.survey_id,
+                customerId: row.customer_id,
+                customerName: row.customer_name,
+                shardIndex,
+                totalShards
+            });
 
             return row;
 
@@ -166,7 +171,7 @@ class DatabaseClient {
     async getSurveyResponseById(surveyId) {
         try {
             const query = `
-        SELECT id, customer_id, data_sent_to_retell, processed
+        SELECT id, customer_id, processed
         FROM ${this.tableName}
         WHERE id = $1
       `;
@@ -226,6 +231,108 @@ class DatabaseClient {
         }
 
         throw lastError;
+    }
+
+    /**
+     * Get the next processed survey response for Odoo integration with sharding and row locking
+     * @param {number} shardIndex - 1-based shard index for this pod
+     * @param {number} totalShards - Total number of shards (pods)
+     * @returns {Promise<Object|null>} Processed survey response row or null if none available
+     */
+    async getNextProcessedSurveyForOdoo(shardIndex, totalShards) {
+        const client = await this.pool.connect();
+
+        try {
+            await client.query('BEGIN');
+
+            // Query with sharding logic and row locking for processed surveys
+            const query = `
+          SELECT
+            sr.id                     AS survey_id,
+            sr.customer_id,
+            c.name                    AS customer_name,
+            c.email                   AS client_email,
+            c.phone_number            AS client_phone_number,
+            sr.call_summary           AS summary,
+            sr.created_at             AS survey_date
+          FROM survey_responses sr
+          JOIN customers c
+            ON c.id = sr.customer_id
+          WHERE
+            sr.processed = TRUE
+            AND sr.sent_to_odoo IS NOT TRUE
+            AND (sr.id % $1) = ($2 - 1)
+          ORDER BY sr.updated_at ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+        `;
+
+            const result = await client.query(query, [totalShards, shardIndex]);
+
+            await client.query('COMMIT');
+
+            if (result.rows.length === 0) {
+                logger.debug({ shardIndex, totalShards }, 'No processed survey responses found for Odoo integration');
+                return null;
+            }
+
+            const row = result.rows[0];
+            logger.info({
+                surveyId: row.survey_id,
+                shardIndex,
+                totalShards,
+                customerName: row.customer_name
+            }, 'Retrieved processed survey response for Odoo integration');
+
+            return row;
+
+        } catch (error) {
+            await client.query('ROLLBACK');
+            logger.error({
+                err: error,
+                shardIndex,
+                totalShards
+            }, 'Failed to get next processed survey response for Odoo');
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    /**
+     * Mark a survey response as sent to Odoo
+     * @param {number} surveyId - The survey response ID
+     * @returns {Promise<boolean>} Success status
+     */
+    async markAsSentToOdoo(surveyId) {
+        const client = await this.pool.connect();
+
+        try {
+            const query = `
+          UPDATE ${this.tableName}
+          SET sent_to_odoo = TRUE, updated_at = NOW()
+          WHERE id = $1
+        `;
+
+            const result = await client.query(query, [surveyId]);
+
+            if (result.rowCount === 0) {
+                logger.warn({ surveyId }, 'No rows updated when marking as sent to Odoo');
+                return false;
+            }
+
+            logger.info({ surveyId }, 'Marked survey response as sent to Odoo');
+            return true;
+
+        } catch (error) {
+            logger.error({
+                err: error,
+                surveyId
+            }, 'Failed to mark survey response as sent to Odoo');
+            throw error;
+        } finally {
+            client.release();
+        }
     }
 
     async close() {

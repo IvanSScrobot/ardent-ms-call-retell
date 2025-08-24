@@ -227,8 +227,8 @@ CREATE TABLE survey_responses (
   created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   processed BOOLEAN,
   call_summary TEXT,
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  data_sent_to_retell BOOLEAN
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+  //data_sent_to_retell BOOLEAN
 );
 ```
 
@@ -381,7 +381,7 @@ To replay failed survey responses:
 1. **Reset processing flags:**
    ```sql
    UPDATE survey_responses 
-   SET data_sent_to_retell = FALSE 
+   SET processed = FALSE 
    WHERE id IN (failed_survey_ids);
    ```
 

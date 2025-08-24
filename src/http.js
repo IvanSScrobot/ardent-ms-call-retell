@@ -4,11 +4,12 @@ const cors = require('cors');
 const logger = require('./logger');
 
 class HttpServer {
-    constructor(dbClient, retellClient, shardingManager) {
+    constructor(dbClient, retellClient, shardingManager, odooService = null) {
         this.app = express();
         this.dbClient = dbClient;
         this.retellClient = retellClient;
         this.shardingManager = shardingManager;
+        this.odooService = odooService;
         this.server = null;
 
         this.setupMiddleware();
@@ -130,14 +131,29 @@ class HttpServer {
             // Check shard configuration
             const shardValid = await this.shardingManager.validateShardConfig();
 
-            const ready = dbHealthy && shardValid;
+            // Check Odoo connectivity if service is available
+            let odooHealthy = true;
+            let odooStatus = 'not configured';
+            if (this.odooService) {
+                try {
+                    const odooHealth = await this.odooService.healthCheck();
+                    odooHealthy = odooHealth.status === 'healthy';
+                    odooStatus = odooHealth.status;
+                } catch (error) {
+                    odooHealthy = false;
+                    odooStatus = 'unhealthy';
+                }
+            }
+
+            const ready = dbHealthy && shardValid && (this.odooService ? odooHealthy : true);
 
             const readiness = {
                 status: ready ? 'ready' : 'not ready',
                 timestamp: new Date().toISOString(),
                 checks: {
                     database: dbHealthy ? 'healthy' : 'unhealthy',
-                    sharding: shardValid ? 'valid' : 'invalid'
+                    sharding: shardValid ? 'valid' : 'invalid',
+                    odoo: odooStatus
                 }
             };
 
@@ -160,6 +176,25 @@ class HttpServer {
             const activeCallsCount = this.retellClient.getActiveCallsCount();
             const activeSurveysCount = this.retellClient.getActiveSurveysCount();
 
+            // Get Odoo status if service is available
+            let odooStatus = { enabled: false };
+            if (this.odooService) {
+                try {
+                    const odooHealth = await this.odooService.healthCheck();
+                    odooStatus = {
+                        enabled: true,
+                        status: odooHealth.status,
+                        version: odooHealth.version
+                    };
+                } catch (error) {
+                    odooStatus = {
+                        enabled: true,
+                        status: 'unhealthy',
+                        error: error.message
+                    };
+                }
+            }
+
             const status = {
                 service: 'retell-processor',
                 version: process.env.npm_package_version || '1.0.0',
@@ -169,12 +204,15 @@ class HttpServer {
                 shard: shardStats,
                 activeCalls: activeCallsCount,
                 activeSurveys: activeSurveysCount,
+                odoo: odooStatus,
                 memory: process.memoryUsage(),
                 config: {
                     scanInterval: process.env.SCAN_INTERVAL_MS || 10000,
+                    odooScanInterval: process.env.ODOO_SCAN_INTERVAL_MS || 15000,
                     dbHost: process.env.DB_HOST,
                     dbName: process.env.DB_NAME,
-                    retellFromNumber: process.env.RETELL_FROM_NUMBER || '+17787691188'
+                    retellFromNumber: process.env.RETELL_FROM_NUMBER || '+17787691188',
+                    odooUrl: process.env.ODOO_URL || 'not configured'
                 }
             };
 
